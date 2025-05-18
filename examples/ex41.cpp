@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
    real_t dt = -0.01;
    real_t cfl = 0.5;
    bool visualization = true;
-   bool preassembleWeakDiv = false; // we prefer NO
+   bool preassembleWeakDiv = false; // MUST be used with nodal elements (excluding Positive, i.e. Bernstein basis)
    int vis_steps = 20;
 
    int precision = 8;
@@ -128,7 +128,8 @@ int main(int argc, char *argv[])
 
    // 4. Define the discontinuous DG finite element space of the given
    //    polynomial order on the refined mesh.
-   DG_FECollection fec(order, dim);
+   // use nodal elements, map type must be VALUE (default) (INTEGRAL is very fewly used)
+   DG_FECollection fec(order, dim, BasisType::Positive);
    // Finite element space for a scalar (thermodynamic quantity)
    FiniteElementSpace fes(&mesh, &fec);
    // Finite element space for a mesh-dim vector quantity (momentum)
