@@ -1,4 +1,4 @@
-//                  MFEM Example 18 - Serial/Parallel Shared Code
+//                  MFEM Example 18 - Serial/Parallel Shared Code for MHD equations
 //                      (Implementation of Time-dependent DG Operator)
 //
 // This code provide example problems for the MHD equations and implements
@@ -40,7 +40,6 @@ private:
    std::unique_ptr<NonlinearForm> nonlinearForm;
    // element-wise inverse mass matrix
    std::vector<DenseMatrix> invmass; // local scalar inverse mass
-   std::vector<DenseMatrix> weakdiv; // local weak divergence (trial space ByDim)
    // global maximum characteristic speed. Updated by form integrators
    mutable real_t max_char_speed;
    // auxiliary variable used in Mult
@@ -48,8 +47,6 @@ private:
 
    // Compute element-wise inverse mass matrix
    void ComputeInvMass();
-   // Compute element-wise weak-divergence matrix
-   void ComputeWeakDivergence();
 
 public:
    /**
@@ -57,13 +54,10 @@ public:
     *
     * @param vfes_ vector finite element space. Only tested for DG [Pₚ]ⁿ
     * @param formIntegrator_ integrator (F(u,x), grad v)
-    * @param preassembleWeakDivergence preassemble weak divergence for faster
-    *                                  assembly
     */
    DGHyperbolicConservationLaws(
       FiniteElementSpace &vfes_,
-      std::unique_ptr<HyperbolicFormIntegrator> formIntegrator_,
-      bool preassembleWeakDivergence=true);
+      std::unique_ptr<HyperbolicFormIntegrator> formIntegrator_);
    /**
     * @brief Apply nonlinear form to obtain M⁻¹(DIVF + JUMP HAT(F))
     *
@@ -85,8 +79,7 @@ public:
 // Implementation of class DGHyperbolicConservationLaws
 DGHyperbolicConservationLaws::DGHyperbolicConservationLaws(
    FiniteElementSpace &vfes_,
-   std::unique_ptr<HyperbolicFormIntegrator> formIntegrator_,
-   bool preassembleWeakDivergence)
+   std::unique_ptr<HyperbolicFormIntegrator> formIntegrator_)
    : TimeDependentOperator(vfes_.GetTrueVSize()),
      num_equations(formIntegrator_->num_equations),
      dim(vfes_.GetMesh()->SpaceDimension()),
@@ -96,6 +89,9 @@ DGHyperbolicConservationLaws::DGHyperbolicConservationLaws(
 {
    // Standard local assembly and inversion for energy mass matrices.
    ComputeInvMass();
+
+   /** For nonlinear operators, the "matrix" assembly levels usually do not make
+       sense, so only PARTIAL and NONE (matrix-free) are supported. */
 #ifndef MFEM_USE_MPI
    nonlinearForm.reset(new NonlinearForm(&vfes));
 #else
@@ -109,16 +105,9 @@ DGHyperbolicConservationLaws::DGHyperbolicConservationLaws(
       nonlinearForm.reset(new NonlinearForm(&vfes));
    }
 #endif
-   if (preassembleWeakDivergence)
-   {
-      ComputeWeakDivergence();
-   }
-   else
-   {
-      nonlinearForm->AddDomainIntegrator(formIntegrator.get());
-   }
-   nonlinearForm->AddInteriorFaceIntegrator(formIntegrator.get());
-   nonlinearForm->UseExternalIntegrators(); // Indicate that integrators are not owned by the NonlinearForm
+   nonlinearForm->AddDomainIntegrator(formIntegrator.get());
+   nonlinearForm->AddInteriorFaceIntegrator(formIntegrator.get()); // only interior faces
+   nonlinearForm->UseExternalIntegrators(); // indicate that integrators are not owned by the NonlinearForm
 
 }
 
@@ -137,109 +126,38 @@ void DGHyperbolicConservationLaws::ComputeInvMass()
    }
 }
 
-void DGHyperbolicConservationLaws::ComputeWeakDivergence()
-{
-   TransposeIntegrator weak_div(new GradientIntegrator());
-   DenseMatrix weakdiv_bynodes;
-
-   weakdiv.resize(vfes.GetNE());
-   for (int i=0; i<vfes.GetNE(); i++)
-   {
-      const int dof = vfes.GetFE(i)->GetDof();
-      weakdiv_bynodes.SetSize(dof, dof*dim);
-      weak_div.AssembleElementMatrix2(*vfes.GetFE(i), *vfes.GetFE(i),
-                                      *vfes.GetElementTransformation(i),
-                                      weakdiv_bynodes);
-      weakdiv[i].SetSize(dof, dof*dim);
-      // Reorder so that trial space is ByDim.
-      // This makes applying weak divergence to flux value simpler.
-      for (int j=0; j<dof; j++)
-      {
-         for (int d=0; d<dim; d++)
-         {
-            weakdiv[i].SetCol(j*dim + d, weakdiv_bynodes.GetColumn(d*dof + j));
-         }
-      }
-
-   }
-}
-
 
 void DGHyperbolicConservationLaws::Mult(const Vector &x, Vector &y) const
 {
-   // 0. Reset wavespeed computation before operator application.
-   formIntegrator->ResetMaxCharSpeed();
-   // 1. Apply Nonlinear form to obtain an auxiliary result
-   //         z = - <F̂(u_h,n), [[v]]>_e
-   //    If weak-divergence is not preassembled, we also have weak-divergence
-   //         z = - <F̂(u_h,n), [[v]]>_e + (F(u_h), ∇v)
-   nonlinearForm->Mult(x, z);
+    // 0. Reset wavespeed computation before operator application.
+    formIntegrator->ResetMaxCharSpeed();
 
-   // 2. Apply Linear form to add source term
+    // 1. Apply Nonlinear form to obtain an auxiliary result
+    //         z = - <F̂(u_h,n), [[v]]>_e + (F(u_h), ∇v)
+    nonlinearForm->Mult(x, z);
 
-   if (!weakdiv.empty()) // if weak divergence is pre-assembled
-   {
-      // Apply weak divergence to F(u_h), and inverse mass to z_loc + weakdiv_loc
-      Vector current_state; // view of current state at a node
-      DenseMatrix current_flux; // flux of current state
-      DenseMatrix flux; // element flux value. Whose column is ordered by dim.
-      DenseMatrix current_xmat; // view of current states in an element, dof x num_eq
-      DenseMatrix current_zmat; // view of element auxiliary result, dof x num_eq
-      DenseMatrix current_ymat; // view of element result, dof x num_eq
-      const FluxFunction &fluxFunction = formIntegrator->GetFluxFunction();
-      Array<int> vdofs;
-      Vector xval, zval;
-      for (int i=0; i<vfes.GetNE(); i++)
-      {
-         ElementTransformation* Tr = vfes.GetElementTransformation(i);
-         const int dof = vfes.GetFE(i)->GetDof();
-         vfes.GetElementVDofs(i, vdofs);
-         x.GetSubVector(vdofs, xval);
-         current_xmat.UseExternalData(xval.GetData(), dof, num_equations);
-         flux.SetSize(num_equations, dim*dof);
-         for (int j=0; j<dof; j++) // compute flux for all nodes in the element
-         {
-            current_xmat.GetRow(j, current_state);
-            current_flux.UseExternalData(flux.GetData() + num_equations*dim*j,
-                                         num_equations, dof);
-            fluxFunction.ComputeFlux(current_state, *Tr, current_flux);
-         }
-         // Compute weak-divergence and add it to auxiliary result, z
-         // Recalling that weakdiv is reordered by dim, we can apply
-         // weak-divergence to the transpose of flux.
-         z.GetSubVector(vdofs, zval);
-         current_zmat.UseExternalData(zval.GetData(), dof, num_equations);
-         mfem::AddMult_a_ABt(1.0, weakdiv[i], flux, current_zmat);
-         // Apply inverse mass to auxiliary result to obtain the final result
-         current_ymat.SetSize(dof, num_equations);
-         mfem::Mult(invmass[i], current_zmat, current_ymat);
-         y.SetSubVector(vdofs, current_ymat.GetData());
-      }
-   }
-   else
-   {
-      // Apply block inverse mass
-      Vector zval; // z_loc, dof*num_eq
-      DenseMatrix current_zmat; // view of element auxiliary result, dof x num_eq
-      DenseMatrix current_ymat; // view of element result, dof x num_eq
-      Array<int> vdofs;
-      for (int i=0; i<vfes.GetNE(); i++)
-      {
-         const int dof = vfes.GetFE(i)->GetDof();
-         // ALWAYS returns ByNodes ordering (like separate fields)
-         vfes.GetElementVDofs(i, vdofs);
-         // copy from the global vector to the local vector
-         z.GetSubVector(vdofs, zval);
-         // each column is a field and each row is a node/DOF
-         current_zmat.UseExternalData(zval.GetData(), dof, num_equations);
-         current_ymat.SetSize(dof, num_equations);
-         // invmass left multiplies the auxiliary result
-         mfem::Mult(invmass[i], current_zmat, current_ymat);
-         // return the result to the global vector
-         y.SetSubVector(vdofs, current_ymat.GetData());
-      }
-   }
-   max_char_speed = formIntegrator->GetMaxCharSpeed();
+    // 2. Apply Linear form
+    // Apply block inverse mass
+    Vector zval; // z_loc, dof*num_eq
+    DenseMatrix current_zmat; // view of element auxiliary result, dof x num_eq
+    DenseMatrix current_ymat; // view of element result, dof x num_eq
+    Array<int> vdofs;
+    for (auto i=0; i<vfes.GetNE(); i++)
+    {
+        const auto dof = vfes.GetFE(i)->GetDof();
+        // ALWAYS returns ByNodes ordering (like separate fields)
+        vfes.GetElementVDofs(i, vdofs);
+        // copy from the global vector to the local vector
+        z.GetSubVector(vdofs, zval);
+        // each column is a field and each row is a DOF
+        current_zmat.UseExternalData(zval.GetData(), dof, num_equations);
+        current_ymat.SetSize(dof, num_equations);
+        // invmass left multiplies the auxiliary result
+        mfem::Mult(invmass[i], current_zmat, current_ymat);
+        // return the result to the global vector
+        y.SetSubVector(vdofs, current_ymat.GetData());
+    }
+    max_char_speed = formIntegrator->GetMaxCharSpeed();
 }
 
 void DGHyperbolicConservationLaws::Update()
@@ -250,65 +168,8 @@ void DGHyperbolicConservationLaws::Update()
    z.SetSize(height);
 
    ComputeInvMass();
-   if (!weakdiv.empty()) {ComputeWeakDivergence();}
 }
 
-
-
-
-
-
-std::function<void(const Vector&, Vector&)> GetMovingVortexInit(
-   const real_t radius, const real_t Minf, const real_t beta,
-   const real_t gas_constant, const real_t specific_heat_ratio)
-{
-   return [specific_heat_ratio,
-           gas_constant, Minf, radius, beta](const Vector &x, Vector &y)
-   {
-      MFEM_ASSERT(x.Size() == 2, "");
-
-      const real_t xc = 0.0, yc = 0.0;
-
-      // Nice units
-      const real_t vel_inf = 1.;
-      const real_t den_inf = 1.;
-
-      // Derive remainder of background state from this and Minf
-      const real_t pres_inf = (den_inf / specific_heat_ratio) *
-                              (vel_inf / Minf) * (vel_inf / Minf);
-      const real_t temp_inf = pres_inf / (den_inf * gas_constant);
-
-      real_t r2rad = 0.0;
-      r2rad += (x(0) - xc) * (x(0) - xc);
-      r2rad += (x(1) - yc) * (x(1) - yc);
-      r2rad /= (radius * radius);
-
-      const real_t shrinv1 = 1.0 / (specific_heat_ratio - 1.);
-
-      const real_t velX =
-         vel_inf * (1 - beta * (x(1) - yc) / radius * std::exp(-0.5 * r2rad));
-      const real_t velY =
-         vel_inf * beta * (x(0) - xc) / radius * std::exp(-0.5 * r2rad);
-      const real_t vel2 = velX * velX + velY * velY;
-
-      const real_t specific_heat =
-         gas_constant * specific_heat_ratio * shrinv1;
-      const real_t temp = temp_inf - 0.5 * (vel_inf * beta) *
-                          (vel_inf * beta) / specific_heat *
-                          std::exp(-r2rad);
-
-      const real_t den = den_inf * std::pow(temp / temp_inf, shrinv1);
-      const real_t pres = den * gas_constant * temp;
-      const real_t energy = shrinv1 * pres / den + 0.5 * vel2;
-
-      y(0) = den;
-      y(1) = den * velX;
-      y(2) = den * velY;
-      y(3) = 0.0;
-      y(4) = 0.0;
-      y(5) = den * energy;
-   };
-}
 
 // triangular mesh for [0,1]^2 with periodic BC
 Mesh MHDMesh(const int problem)
@@ -318,8 +179,7 @@ Mesh MHDMesh(const int problem)
 
 // Initial condition
 VectorFunctionCoefficient MHDInitialCondition(const int problem,
-                                              real_t specific_heat_ratio,
-                                              const real_t gas_constant)
+                                              real_t specific_heat_ratio)
 {
    switch (problem)
    {

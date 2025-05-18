@@ -37,11 +37,6 @@
 //               that wraps NonlinearFormIntegrators containing element and face
 //               integration schemes. In this case the system also involves an
 //               external approximate Riemann solver for the DG interface flux.
-//               By default, weak-divergence is pre-assembled in element-wise
-//               manner, which corresponds to (I_h(F(u_h)), ∇ v). This yields
-//               better performance and similar accuracy for the included test
-//               problems. This can be turned off and use nonlinear assembly
-//               similar to matrix-free assembly when -mf flag is provided.
 //               It also demonstrates how to use GLVis for in-situ visualization
 //               of vector grid function and how to set top-view.
 //
@@ -62,7 +57,6 @@ int main(int argc, char *argv[])
    // 1. Parse command-line options.
    int problem = 1;
    const real_t specific_heat_ratio = 5.0/3.0;
-   const real_t gas_constant = 1.0;
 
    string mesh_file = "";
    int IntOrderOffset = 0; // should be >=0
@@ -73,7 +67,6 @@ int main(int argc, char *argv[])
    real_t dt = -0.01;
    real_t cfl = 0.5;
    bool visualization = true;
-   bool preassembleWeakDiv = false; // MUST be used with nodal elements (excluding Positive, i.e. Bernstein basis)
    int vis_steps = 20;
 
    int precision = 8;
@@ -99,11 +92,6 @@ int main(int argc, char *argv[])
    args.AddOption(&visualization, "-vis", "--visualization", "-no-vis",
                   "--no-visualization",
                   "Enable or disable GLVis visualization.");
-   args.AddOption(&preassembleWeakDiv, "-ea", "--element-assembly-divergence",
-                  "-mf", "--matrix-free-divergence",
-                  "Weak divergence assembly level\n"
-                  "    ea - Element assembly with interpolated F\n"
-                  "    mf - Nonlinear assembly in matrix-free manner");
    args.AddOption(&vis_steps, "-vs", "--visualization-steps",
                   "Visualize every n-th timestep.");
    args.ParseCheck();
@@ -126,9 +114,8 @@ int main(int argc, char *argv[])
    //    Runge-Kutta methods are available.
    unique_ptr<ODESolver> ode_solver = ODESolver::SelectExplicit(ode_solver_type);
 
-   // 4. Define the discontinuous DG finite element space of the given
-   //    polynomial order on the refined mesh.
-   // use nodal elements, map type must be VALUE (default) (INTEGRAL is very fewly used)
+   // 4. Define the discontinuous DG finite element space of the given polynomial order on the refined mesh.
+   // use nodal elements, map type must be FiniteElement::VALUE (default) (FiniteElement::INTEGRAL is seldomly used)
    DG_FECollection fec(order, dim, BasisType::Positive);
    // Finite element space for a scalar (thermodynamic quantity)
    FiniteElementSpace fes(&mesh, &fec);
@@ -147,13 +134,11 @@ int main(int argc, char *argv[])
    //    "glvis -m mhd-mesh.mesh -g mhd-1-init.gf" (for x-momentum).
 
    // Initialize the state.
-   VectorFunctionCoefficient u0 = MHDInitialCondition(problem,
-                                                      specific_heat_ratio,
-                                                      gas_constant);
+   VectorFunctionCoefficient u0 = MHDInitialCondition(problem, specific_heat_ratio);
    GridFunction sol(&vfes);
    sol.ProjectCoefficient(u0);
    GridFunction density_sol(&fes, sol.GetData() + 0 * fes.GetNDofs());
-   // Output the initial solution.
+   // Output the initial density profile
    {
       ostringstream mesh_name;
       mesh_name << "mhd-mesh.mesh";
@@ -173,12 +158,11 @@ int main(int argc, char *argv[])
    }
 
    // 6. Set up the nonlinear form with mhd flux and numerical flux
-   IdealMHDFlux flux(dim, specific_heat_ratio);
-   RusanovFlux numericalFlux(flux);
+   IdealMHDFlux mhdflux(dim, specific_heat_ratio);
+   RusanovFlux numericalFlux(mhdflux);
    DGHyperbolicConservationLaws mhd(
       vfes, std::unique_ptr<HyperbolicFormIntegrator>(
-         new HyperbolicFormIntegrator(numericalFlux, IntOrderOffset)),
-      preassembleWeakDiv);
+         new HyperbolicFormIntegrator(numericalFlux, IntOrderOffset)));
 
    // 7. Visualize momentum with its magnitude
    socketstream sout;
