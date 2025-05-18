@@ -61,20 +61,20 @@ int main(int argc, char *argv[])
 {
    // 1. Parse command-line options.
    int problem = 1;
-   const real_t specific_heat_ratio = 1.4;
+   const real_t specific_heat_ratio = 5.0/3.0;
    const real_t gas_constant = 1.0;
 
    string mesh_file = "";
-   int IntOrderOffset = 1;
-   int ref_levels = 1;
-   int order = 3;
-   int ode_solver_type = 4;
-   real_t t_final = 2.0;
+   int IntOrderOffset = 0; // should be >=0
+   int ref_levels = 0;
+   int order = 2;
+   int ode_solver_type = 3; // SSPRK3
+   real_t t_final = 0.5;
    real_t dt = -0.01;
-   real_t cfl = 0.3;
+   real_t cfl = 0.5;
    bool visualization = true;
-   bool preassembleWeakDiv = true;
-   int vis_steps = 50;
+   bool preassembleWeakDiv = false; // we prefer NO
+   int vis_steps = 20;
 
    int precision = 8;
    cout.precision(precision);
@@ -151,7 +151,7 @@ int main(int argc, char *argv[])
                                                       gas_constant);
    GridFunction sol(&vfes);
    sol.ProjectCoefficient(u0);
-   GridFunction mom(&dfes, sol.GetData() + fes.GetNDofs());
+   GridFunction density_sol(&fes, sol.GetData() + 0 * fes.GetNDofs());
    // Output the initial solution.
    {
       ostringstream mesh_name;
@@ -198,8 +198,8 @@ int main(int argc, char *argv[])
       {
          sout.precision(precision);
          // Plot magnitude of vector-valued momentum
-         sout << "solution\n" << mesh << mom;
-         sout << "window_title 'momentum, t = 0'\n";
+         sout << "solution\n" << mesh << density_sol;
+         sout << "window_title 'density, t = 0'\n";
          sout << "view 0 0\n";  // view from top
          sout << "keys jlm\n";  // turn off perspective and light, show mesh
          sout << "pause\n";
@@ -259,8 +259,8 @@ int main(int argc, char *argv[])
          cout << "time step: " << ti << ", time: " << t << endl;
          if (visualization)
          {
-            sout << "window_title 'momentum, t = " << t << "'\n";
-            sout << "solution\n" << mesh << mom << flush;
+            sout << "window_title 'density, t = " << t << "'\n";
+            sout << "solution\n" << mesh << density_sol << flush;
          }
       }
    }
@@ -290,6 +290,7 @@ int main(int argc, char *argv[])
 
    // 10. Compute the L2 solution error summed for all components.
    const real_t error = sol.ComputeLpError(2, u0);
+   cout << scientific;
    cout << "Solution error: " << error << endl;
 
    return 0;

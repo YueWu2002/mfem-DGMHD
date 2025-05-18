@@ -118,7 +118,7 @@ DGHyperbolicConservationLaws::DGHyperbolicConservationLaws(
       nonlinearForm->AddDomainIntegrator(formIntegrator.get());
    }
    nonlinearForm->AddInteriorFaceIntegrator(formIntegrator.get());
-   nonlinearForm->UseExternalIntegrators();
+   nonlinearForm->UseExternalIntegrators(); // Indicate that integrators are not owned by the NonlinearForm
 
 }
 
@@ -127,9 +127,9 @@ void DGHyperbolicConservationLaws::ComputeInvMass()
    InverseIntegrator inv_mass(new MassIntegrator());
 
    invmass.resize(vfes.GetNE());
-   for (int i=0; i<vfes.GetNE(); i++)
+   for (auto i=0; i<vfes.GetNE(); i++)
    {
-      int dof = vfes.GetFE(i)->GetDof();
+      const int dof = vfes.GetFE(i)->GetDof();
       invmass[i].SetSize(dof);
       inv_mass.AssembleElementMatrix(*vfes.GetFE(i),
                                      *vfes.GetElementTransformation(i),
@@ -145,7 +145,7 @@ void DGHyperbolicConservationLaws::ComputeWeakDivergence()
    weakdiv.resize(vfes.GetNE());
    for (int i=0; i<vfes.GetNE(); i++)
    {
-      int dof = vfes.GetFE(i)->GetDof();
+      const int dof = vfes.GetFE(i)->GetDof();
       weakdiv_bynodes.SetSize(dof, dof*dim);
       weak_div.AssembleElementMatrix2(*vfes.GetFE(i), *vfes.GetFE(i),
                                       *vfes.GetElementTransformation(i),
@@ -174,6 +174,9 @@ void DGHyperbolicConservationLaws::Mult(const Vector &x, Vector &y) const
    //    If weak-divergence is not preassembled, we also have weak-divergence
    //         z = - <F̂(u_h,n), [[v]]>_e + (F(u_h), ∇v)
    nonlinearForm->Mult(x, z);
+
+   // 2. Apply Linear form to add source term
+
    if (!weakdiv.empty()) // if weak divergence is pre-assembled
    {
       // Apply weak divergence to F(u_h), and inverse mass to z_loc + weakdiv_loc
@@ -189,7 +192,7 @@ void DGHyperbolicConservationLaws::Mult(const Vector &x, Vector &y) const
       for (int i=0; i<vfes.GetNE(); i++)
       {
          ElementTransformation* Tr = vfes.GetElementTransformation(i);
-         int dof = vfes.GetFE(i)->GetDof();
+         const int dof = vfes.GetFE(i)->GetDof();
          vfes.GetElementVDofs(i, vdofs);
          x.GetSubVector(vdofs, xval);
          current_xmat.UseExternalData(xval.GetData(), dof, num_equations);
@@ -217,18 +220,22 @@ void DGHyperbolicConservationLaws::Mult(const Vector &x, Vector &y) const
    {
       // Apply block inverse mass
       Vector zval; // z_loc, dof*num_eq
-
       DenseMatrix current_zmat; // view of element auxiliary result, dof x num_eq
       DenseMatrix current_ymat; // view of element result, dof x num_eq
       Array<int> vdofs;
       for (int i=0; i<vfes.GetNE(); i++)
       {
-         int dof = vfes.GetFE(i)->GetDof();
+         const int dof = vfes.GetFE(i)->GetDof();
+         // ALWAYS returns ByNodes ordering (like separate fields)
          vfes.GetElementVDofs(i, vdofs);
+         // copy from the global vector to the local vector
          z.GetSubVector(vdofs, zval);
+         // each column is a field and each row is a node/DOF
          current_zmat.UseExternalData(zval.GetData(), dof, num_equations);
          current_ymat.SetSize(dof, num_equations);
+         // invmass left multiplies the auxiliary result
          mfem::Mult(invmass[i], current_zmat, current_ymat);
+         // return the result to the global vector
          y.SetSubVector(vdofs, current_ymat.GetData());
       }
    }
@@ -303,75 +310,40 @@ std::function<void(const Vector&, Vector&)> GetMovingVortexInit(
    };
 }
 
+// triangular mesh for [0,1]^2 with periodic BC
 Mesh MHDMesh(const int problem)
 {
-   switch (problem)
-   {
-      case 1:
-      case 2:
-      case 3:
-         return Mesh("../data/periodic-square.mesh");
-         break;
-      case 4:
-         return Mesh("../data/periodic-segment.mesh");
-         break;
-      default:
-         MFEM_ABORT("Problem Undefined");
-   }
+    return Mesh("../data/periodic-square-tri.msh");
 }
 
 // Initial condition
 VectorFunctionCoefficient MHDInitialCondition(const int problem,
-                                              const real_t specific_heat_ratio,
+                                              real_t specific_heat_ratio,
                                               const real_t gas_constant)
 {
    switch (problem)
    {
-      case 1: // fast moving vortex
-         return VectorFunctionCoefficient(
-                   6, GetMovingVortexInit(0.2, 0.5, 1. / 5., gas_constant,
-                                          specific_heat_ratio));
-      case 2: // slow moving vortex
-         return VectorFunctionCoefficient(
-                   6, GetMovingVortexInit(0.2, 0.05, 1. / 50., gas_constant,
-                                          specific_heat_ratio));
-      case 3: // moving sine wave
-         return VectorFunctionCoefficient(6, [specific_heat_ratio](const Vector &x,
-                                                                   Vector &y)
-         {
+    case 1: // Orzag-Tang vortex (with 3 refines, negative density emerge at t=0.23)
+        return VectorFunctionCoefficient(6, [specific_heat_ratio](const Vector &x,Vector &y)
+            {
             MFEM_ASSERT(x.Size() == 2, "");
-            const real_t density = 1.0 + 0.2 * std::sin(M_PI*(x(0) + x(1)));
-            const real_t velocity_x = 0.7;
-            const real_t velocity_y = 0.3;
-            const real_t pressure = 1.0;
+            const real_t density = 25.0/(36.0*M_PI);
+            const real_t velocity_x = -std::sin(2*M_PI*x(1));
+            const real_t velocity_y = std::sin(2*M_PI*x(0));
+            const real_t magnetic_x = -std::sin(2*M_PI*x(1))/std::sqrt(4*M_PI);
+            const real_t magnetic_y = std::sin(4*M_PI*x(0))/std::sqrt(4*M_PI);
+            const real_t pressure = 5.0/(12.0*M_PI);
             const real_t energy =
-               pressure / (specific_heat_ratio - 1.0) +
-               density * 0.5 * (velocity_x * velocity_x + velocity_y * velocity_y);
+            pressure / (specific_heat_ratio - 1.0) +
+            0.5 * (density * (velocity_x * velocity_x + velocity_y * velocity_y) + (magnetic_x*magnetic_x + magnetic_y*magnetic_y));
 
             y(0) = density;
             y(1) = density * velocity_x;
             y(2) = density * velocity_y;
-            y(3) = 0.0;
-            y(4) = 0.0;
+            y(3) = magnetic_x;
+            y(4) = magnetic_y;
             y(5) = energy;
-         });
-      case 4:
-         return VectorFunctionCoefficient(4, [specific_heat_ratio](const Vector &x,
-                                                                   Vector &y)
-         {
-            MFEM_ASSERT(x.Size() == 1, "");
-            const real_t density = 1.0 + 0.2 * std::sin(M_PI * 2 * x(0));
-            const real_t velocity_x = 1.0;
-            const real_t pressure = 1.0;
-            const real_t energy =
-               pressure / (specific_heat_ratio - 1.0) + density * 0.5 *
-               (velocity_x * velocity_x);
-
-            y(0) = density;
-            y(1) = density * velocity_x;
-            y(2) = 0.0;
-            y(3) = energy;
-         });
+            });
       default:
          MFEM_ABORT("Problem Undefined");
    }
