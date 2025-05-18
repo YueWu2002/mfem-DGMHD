@@ -913,6 +913,49 @@ public:
                           Vector &fluxN) const override;
 };
 
+/// Ideal MHD flux
+class IdealMHDFlux : public FluxFunction
+{
+private:
+   const real_t specific_heat_ratio;  // specific heat ratio, γ
+
+public:
+   /**
+    * @brief Construct a new IdealMHDFlux FluxFunction with given spatial
+    * dimension and specific heat ratio
+    *
+    * @param dim spatial dimension
+    * @param specific_heat_ratio specific heat ratio, γ
+    */
+   IdealMHDFlux(const int dim, const real_t specific_heat_ratio)
+      : FluxFunction(2*dim + 2, dim),
+        specific_heat_ratio(specific_heat_ratio) {}
+
+   /**
+    * @brief Compute F(ρ, ρu, B, E)
+    *
+    * @param state state (ρ, ρu, B, E) at current integration point
+    * @param Tr current element transformation with the integration point
+    * @param flux F(ρ, ρu, B, E) = [ρuᵀ; ρuuᵀ + (p + 0.5*|B|^2)I - BBᵀ; Buᵀ - uBᵀ; uᵀ(E + p + 0.5*|B|^2) - (u⋅B)Bᵀ] (u and B are column vectors and F is a matrix)
+    * @return real_t maximum characteristic speed, |u| + √((γp + |B|^2)/ρ)
+    */
+   real_t ComputeFlux(const Vector &state, ElementTransformation &Tr,
+                      DenseMatrix &flux) const override;
+
+   /**
+    * @brief Compute normal flux, F(ρ, ρu, E)n
+    *
+    * @param x x (ρ, ρu, E) at current integration point
+    * @param normal normal vector, usually not a unit vector
+    * @param Tr current element transformation with the integration point
+    * @param fluxN F(ρ, ρu, E)n = [ρu⋅n; ρu(u⋅n) + pn; (u⋅n)(E + p)]
+    * @return real_t maximum characteristic speed, |u| + √(γp/ρ)
+    */
+   real_t ComputeFluxDotN(const Vector &x, const Vector &normal,
+                          FaceElementTransformations &Tr,
+                          Vector &fluxN) const override;
+};
+
 } // namespace mfem
 
 #endif // MFEM_HYPERBOLIC
