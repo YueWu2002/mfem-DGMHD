@@ -4,11 +4,8 @@
 //
 // Sample runs:
 //
-//       ex18 -p 1 -r 2 -o 1 -s 3
-//       ex18 -p 1 -r 1 -o 3 -s 4
-//       ex18 -p 1 -r 0 -o 5 -s 6
-//       ex18 -p 2 -r 1 -o 1 -s 3 -mf
-//       ex18 -p 2 -r 0 -o 3 -s 3 -mf
+//       ./ex41 -r 3 -o 2 -tf 0.23 -gp
+//       ./ex41 -r 3 -o 2 -tf 0.23
 //
 // Description:  This example code solves the ideal MHD system of
 //               equations, a model nonlinear hyperbolic PDE, with a
@@ -33,7 +30,7 @@
 //               method. An additional factor can be tuned by passing the --cfl
 //               (or -c shorter) flag.
 //
-//               The example demonstrates usage of DGHyperbolicConservationLaws
+//               The example demonstrates usage of DG_MHD_GPsource
 //               that wraps NonlinearFormIntegrators containing element and face
 //               integration schemes. In this case the system also involves an
 //               external approximate Riemann solver for the DG interface flux.
@@ -67,6 +64,7 @@ int main(int argc, char *argv[])
    real_t dt = -0.01;
    real_t cfl = 0.5;
    bool visualization = true;
+   bool use_GPsource = false;
    int vis_steps = 20;
 
    int precision = 8;
@@ -94,6 +92,8 @@ int main(int argc, char *argv[])
                   "Enable or disable GLVis visualization.");
    args.AddOption(&vis_steps, "-vs", "--visualization-steps",
                   "Visualize every n-th timestep.");
+    args.AddOption(&use_GPsource, "-gp", "--use-gp-source", "-no-gp", "--no-use-gp-source",
+                   "Enable or disable the use of GP source term.");
    args.ParseCheck();
 
    // 2. Read the mesh from the given mesh file. When the user does not provide
@@ -116,7 +116,7 @@ int main(int argc, char *argv[])
 
    // 4. Define the discontinuous DG finite element space of the given polynomial order on the refined mesh.
    // use nodal elements, map type must be FiniteElement::VALUE (default) (FiniteElement::INTEGRAL is seldomly used)
-   DG_FECollection fec(order, dim, BasisType::Positive);
+   DG_FECollection fec(order, dim, BasisType::GaussLobatto);
    // Finite element space for a scalar (thermodynamic quantity)
    FiniteElementSpace fes(&mesh, &fec);
    // Finite element space for a mesh-dim vector quantity (momentum)
@@ -160,9 +160,12 @@ int main(int argc, char *argv[])
    // 6. Set up the nonlinear form with mhd flux and numerical flux
    IdealMHDFlux mhdflux(dim, specific_heat_ratio);
    RusanovFlux numericalFlux(mhdflux);
-   DGHyperbolicConservationLaws mhd(
-      vfes, std::unique_ptr<HyperbolicFormIntegrator>(
-         new HyperbolicFormIntegrator(numericalFlux, IntOrderOffset)));
+   GPsource gpsource(dim);
+   RusanovGPsource numericalGPsource(gpsource);
+   DG_MHD_GPsource mhd(vfes, 
+        std::unique_ptr<HyperbolicFormIntegrator>(new HyperbolicFormIntegrator(numericalFlux, IntOrderOffset)), 
+        std::unique_ptr<GPsourceFormIntegrator>(new GPsourceFormIntegrator(numericalGPsource, IntOrderOffset)),
+        use_GPsource);
 
    // 7. Visualize momentum with its magnitude
    socketstream sout;
