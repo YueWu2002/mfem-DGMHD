@@ -157,7 +157,7 @@ int main(int argc, char *argv[])
       }
    }
 
-   // 6. Set up the nonlinear form with mhd flux and numerical flux
+   // 6. Set up the nonlinear form with MHD flux and numerical flux
    IdealMHDFlux mhdflux(dim, specific_heat_ratio);
    RusanovFlux numericalFlux(mhdflux);
    GPsource gpsource(dim);

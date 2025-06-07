@@ -143,20 +143,20 @@ public:
         // Rusanov flux for the magnetic field normal component
         const real_t Bhatn = 0.5 * (B1n + B2n);
         const real_t Bjump1 = Bhatn - B1n;
-        const real_t Bjump2 = Bhatn - B2n;
+        const real_t Bjump2 = B2n - Bhatn; // because of the negative sign of nor from el2
 
         source1.SetSize(gpSource.num_equations);
         source2.SetSize(gpSource.num_equations);
         source1(0) = 0.0;
         source2(0) = 0.0;
         for (auto i=0;i<dim;i++) source1(i+1) = -state1(i+1+dim) * Bjump1;
-        for (auto i=0;i<dim;i++) source2(i+1) = +state2(i+1+dim) * Bjump2;
+        for (auto i=0;i<dim;i++) source2(i+1) = -state2(i+1+dim) * Bjump2;
         for (auto i=0;i<dim;i++) source1(i+1+dim) = -state1(i+1) / state1(0) * Bjump1;
-        for (auto i=0;i<dim;i++) source2(i+1+dim) = +state2(i+1) / state2(0) * Bjump2;
+        for (auto i=0;i<dim;i++) source2(i+1+dim) = -state2(i+1) / state2(0) * Bjump2;
         source1(1+2*dim) = 0.0;
         source2(1+2*dim) = 0.0;
         for (auto i=0;i<dim;i++) source1(1+2*dim) -= (state1(i+1) / state1(0)) * state1(i+1+dim);
-        for (auto i=0;i<dim;i++) source2(1+2*dim) += (state2(i+1) / state2(0)) * state2(i+1+dim);
+        for (auto i=0;i<dim;i++) source2(1+2*dim) -= (state2(i+1) / state2(0)) * state2(i+1+dim);
         source1(1+2*dim) *= Bjump1;
         source2(1+2*dim) *= Bjump2;
     }
@@ -408,7 +408,7 @@ public:
 
 
 
-/// @brief Time dependent DG operator for hyperbolic conservation laws
+/// @brief Time dependent DG operator for MHD equation with GP source term
 class DG_MHD_GPsource : public TimeDependentOperator
 {
 private:
